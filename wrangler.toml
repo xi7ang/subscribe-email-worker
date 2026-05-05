@@ -3,11 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2024-06-14"
 
 [vars]
-RESEND_FROM_EMAIL = "devmini <noreply@resend.dev>"
+RESEND_FROM_EMAIL = "Devmini <noreply@devmini.space>"
 
-# KV namespace - must be created manually in Cloudflare dashboard first,
-# then bind via dashboard (not via toml env var substitution)
-# GitHub Secrets: RESEND_API_KEY, TURNSTILE_SECRET_KEY
+# KV namespace bound via dashboard: SUBSCRIBE_KV
 
 [observability]
 enabled = false

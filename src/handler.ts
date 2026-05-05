@@ -4,7 +4,7 @@ export interface Env {
   TURNSTILE_SECRET_KEY: string
 }
 
-const RESEND_FROM = 'devmini <noreply@resend.dev>'
+const RESEND_FROM = 'Devmini <noreply@devmini.space>'
 const CODE_EXPIRE_SEC = 300
 const RATE_LIMIT_SEC = 300
 const MAX_VERIFY_ATTEMPTS = 3
