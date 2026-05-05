@@ -25,13 +25,17 @@ function json(status: number, body: object) {
 }
 
 async function verifyTurnstile(token: string, secretKey: string): Promise<boolean> {
-  const params = new URLSearchParams({ secret: secretKey, response: token })
-  const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-    method: 'POST',
-    body: params
-  })
-  const data = await res.json() as { success: boolean }
-  return data.success === true
+  try {
+    const params = new URLSearchParams({ secret: secretKey, response: token })
+    const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      body: params
+    })
+    const data = await res.json() as { success: boolean }
+    return data.success === true
+  } catch {
+    return false
+  }
 }
 
 function generateCode(): string {
@@ -73,7 +77,13 @@ async function sendVerificationEmail(email: string, code: string, apiKey: string
 }
 
 async function handleRequestCode(req: Request, env: Env): Promise<Response> {
-  const body = await req.json() as { email: string; turnstileToken: string }
+  let body: { email?: string; turnstileToken?: string }
+  try {
+    body = await req.json()
+  } catch {
+    return json(400, { success: false, error: '请求格式错误' })
+  }
+
   const { email, turnstileToken } = body
 
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -83,26 +93,40 @@ async function handleRequestCode(req: Request, env: Env): Promise<Response> {
   if (!turnstileToken) {
     return json(403, { success: false, error: '人机验证未通过' })
   }
-  const valid = await verifyTurnstile(turnstileToken, env.TURNSTILE_SECRET_KEY)
-  if (!valid) {
+
+  const turnstileValid = await verifyTurnstile(turnstileToken, env.TURNSTILE_SECRET_KEY)
+  if (!turnstileValid) {
     return json(403, { success: false, error: '人机验证失败，请刷新页面重试' })
   }
 
   const kv = env.SUBSCRIBE_KV
   const rateKey = `rate:${email}`
 
-  const existing = await kv.get(rateKey)
-  if (existing) {
-    const ttl = await kv.getWithMetadata(rateKey)
-    const left = Math.ceil((Number(ttl.metadata?.expiry) - Date.now()) / 1000)
-    return json(429, { success: false, error: `请 ${left} 秒后再试`, retryAfter: left })
+  try {
+    const existing = await kv.get(rateKey)
+    if (existing) {
+      const ttl = await kv.getWithMetadata(rateKey)
+      const left = Math.ceil((Number(ttl.metadata?.expiry ?? 0) - Date.now()) / 1000)
+      return json(429, { success: false, error: `请 ${Math.max(1, left)} 秒后再试`, retryAfter: Math.max(1, left) })
+    }
+  } catch (e) {
+    console.error('KV read rate error:', e)
+    return json(500, { success: false, error: '服务暂不可用，请稍后重试' })
   }
 
   const code = generateCode()
   const codeKey = `code:${email}`
-  await kv.put(codeKey, code, { expirationTtl: CODE_EXPIRE_SEC })
-  await kv.put(`attempts:${email}`, '0', { expirationTtl: CODE_EXPIRE_SEC })
-  await kv.put(rateKey, '1', { expirationTtl: RATE_LIMIT_SEC })
+
+  try {
+    await Promise.all([
+      kv.put(codeKey, code, { expirationTtl: CODE_EXPIRE_SEC }),
+      kv.put(`attempts:${email}`, '0', { expirationTtl: CODE_EXPIRE_SEC }),
+      kv.put(rateKey, '1', { expirationTtl: RATE_LIMIT_SEC }),
+    ])
+  } catch (e) {
+    console.error('KV write error:', e)
+    return json(500, { success: false, error: '服务暂不可用，请稍后重试' })
+  }
 
   try {
     await sendVerificationEmail(email, code, env.RESEND_API_KEY)
@@ -115,7 +139,13 @@ async function handleRequestCode(req: Request, env: Env): Promise<Response> {
 }
 
 async function handleSubscribe(req: Request, env: Env): Promise<Response> {
-  const body = await req.json() as { email: string; code: string; turnstileToken: string }
+  let body: { email?: string; code?: string; turnstileToken?: string }
+  try {
+    body = await req.json()
+  } catch {
+    return json(400, { success: false, error: '请求格式错误' })
+  }
+
   const { email, code, turnstileToken } = body
 
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -125,8 +155,9 @@ async function handleSubscribe(req: Request, env: Env): Promise<Response> {
   if (!turnstileToken) {
     return json(403, { success: false, error: '人机验证未通过' })
   }
-  const valid = await verifyTurnstile(turnstileToken, env.TURNSTILE_SECRET_KEY)
-  if (!valid) {
+
+  const turnstileValid = await verifyTurnstile(turnstileToken, env.TURNSTILE_SECRET_KEY)
+  if (!turnstileValid) {
     return json(403, { success: false, error: '人机验证失败，请刷新页面重试' })
   }
 
@@ -138,25 +169,41 @@ async function handleSubscribe(req: Request, env: Env): Promise<Response> {
   const codeKey = `code:${email}`
   const attemptsKey = `attempts:${email}`
 
-  const stored = await kv.get(codeKey)
+  let stored: string | null
+  try {
+    stored = await kv.get(codeKey)
+  } catch (e) {
+    console.error('KV read code error:', e)
+    return json(500, { success: false, error: '服务暂不可用，请稍后重试' })
+  }
+
   if (!stored) {
     return json(400, { success: false, error: '验证码已过期，请重新获取' })
   }
 
   if (stored !== code) {
-    const attemptsStr = await kv.get(attemptsKey)
-    const attempts = parseInt(attemptsStr || '0', 10) + 1
-    if (attempts >= MAX_VERIFY_ATTEMPTS) {
-      await kv.delete(codeKey)
-      await kv.delete(attemptsKey)
+    let attempts = 0
+    try {
+      const attemptsStr = await kv.get(attemptsKey)
+      attempts = parseInt(attemptsStr || '0', 10)
+    } catch { /* ignore */ }
+
+    const newAttempts = attempts + 1
+    if (newAttempts >= MAX_VERIFY_ATTEMPTS) {
+      try {
+        await Promise.all([kv.delete(codeKey), kv.delete(attemptsKey)])
+      } catch { /* ignore */ }
       return json(400, { success: false, error: '验证失败次数过多，请重新获取验证码' })
     }
-    await kv.put(attemptsKey, String(attempts), { expirationTtl: CODE_EXPIRE_SEC })
-    return json(400, { success: false, error: `验证码错误，剩余 ${MAX_VERIFY_ATTEMPTS - attempts} 次` })
+    try {
+      await kv.put(attemptsKey, String(newAttempts), { expirationTtl: CODE_EXPIRE_SEC })
+    } catch { /* ignore */ }
+    return json(400, { success: false, error: `验证码错误，剩余 ${MAX_VERIFY_ATTEMPTS - newAttempts} 次` })
   }
 
-  await kv.delete(codeKey)
-  await kv.delete(attemptsKey)
+  try {
+    await Promise.all([kv.delete(codeKey), kv.delete(attemptsKey)])
+  } catch { /* ignore */ }
 
   return json(200, { success: true, message: '订阅成功！🎉' })
 }
@@ -175,9 +222,9 @@ const worker = {
 
     try {
       if (url.pathname === '/request-code') {
-        return handleRequestCode(req, env)
+        return await handleRequestCode(req, env)
       } else if (url.pathname === '/subscribe') {
-        return handleSubscribe(req, env)
+        return await handleSubscribe(req, env)
       } else {
         return json(404, { success: false, error: 'Not found' })
       }
