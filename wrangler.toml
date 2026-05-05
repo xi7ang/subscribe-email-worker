@@ -7,8 +7,9 @@ RESEND_FROM_EMAIL = "devmini <noreply@resend.dev>"
 
 # GitHub Secrets: RESEND_API_KEY, TURNSTILE_SECRET_KEY, CLOUDFLARE_KV_NAMESPACE_ID
 
-[kv_namespaces]
-SUBSCRIBE_KV = { binding = "SUBSCRIBE_KV", id = "${CLOUDFLARE_KV_NAMESPACE_ID}" }
+[[kv_namespaces]]
+binding = "SUBSCRIBE_KV"
+id = "${CLOUDFLARE_KV_NAMESPACE_ID}"
 
 [observability]
 enabled = false
