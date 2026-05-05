@@ -1,0 +1,11 @@
+name = "subscribe-email-worker"
+main = "src/index.ts"
+compatibility_date = "2024-06-14"
+
+[vars]
+RESEND_FROM_EMAIL = "devmini <noreply@resend.dev>"
+
+# GitHub Secrets: RESEND_API_KEY, TURNSTILE_SECRET_KEY, CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
+
+[kv_namespaces]
+SUBSCRIBE_KV = { binding = "SUBSCRIBE_KV", id = "SUBSCRIBE_KV_ID" }
