@@ -5,11 +5,10 @@ compatibility_date = "2024-06-14"
 [vars]
 RESEND_FROM_EMAIL = "devmini <noreply@resend.dev>"
 
-# GitHub Secrets: RESEND_API_KEY, TURNSTILE_SECRET_KEY
-# KV: create namespace and replace SUBSCRIBE_KV_ID below
+# GitHub Secrets: RESEND_API_KEY, TURNSTILE_SECRET_KEY, CLOUDFLARE_KV_NAMESPACE_ID
 
 [kv_namespaces]
-SUBSCRIBE_KV = { binding = "SUBSCRIBE_KV", id = "SUBSCRIBE_KV_ID" }
+SUBSCRIBE_KV = { binding = "SUBSCRIBE_KV", id = "${CLOUDFLARE_KV_NAMESPACE_ID}" }
 
 [observability]
 enabled = false
