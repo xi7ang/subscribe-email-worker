@@ -80,8 +80,7 @@ async function handleRequestCode(req: Request, env: Env): Promise<Response> {
   let body: { email?: string; turnstileToken?: string }
   try {
     body = await req.json()
-  } catch (e) {
-    console.error('JSON parse error:', e)
+  } catch {
     return json(400, { success: false, error: '请求格式错误' })
   }
 
@@ -95,9 +94,7 @@ async function handleRequestCode(req: Request, env: Env): Promise<Response> {
     return json(403, { success: false, error: '人机验证未通过' })
   }
 
-  console.log('Verifying turnstile token for:', email)
   const turnstileValid = await verifyTurnstile(turnstileToken, env.TURNSTILE_SECRET_KEY)
-  console.log('Turnstile result:', turnstileValid)
   if (!turnstileValid) {
     return json(403, { success: false, error: '人机验证失败，请刷新页面重试' })
   }
@@ -105,29 +102,20 @@ async function handleRequestCode(req: Request, env: Env): Promise<Response> {
   const kv = env.SUBSCRIBE_KV
   const rateKey = `rate:${email}`
 
-  let existing: string | null = null
   try {
-    existing = await kv.get(rateKey)
-    console.log('KV get rate:', existing)
+    const existing = await kv.get(rateKey)
+    if (existing) {
+      const meta = await kv.getWithMetadata(rateKey)
+      const ttl = meta.metadata?.expiry ? Number(meta.metadata.expiry) : 0
+      const left = Math.ceil((ttl - Date.now()) / 1000)
+      return json(429, { success: false, error: `请 ${Math.max(1, left)} 秒后再试`, retryAfter: Math.max(1, left) })
+    }
   } catch (e) {
     console.error('KV get rate error:', e)
     return json(500, { success: false, error: '服务暂不可用，请稍后重试' })
   }
 
-  if (existing) {
-    try {
-      const meta = await kv.getWithMetadata(rateKey)
-      const ttl = meta.metadata?.expiry ? Number(meta.metadata.expiry) : 0
-      const left = Math.ceil((ttl - Date.now()) / 1000)
-      return json(429, { success: false, error: `请 ${Math.max(1, left)} 秒后再试`, retryAfter: Math.max(1, left) })
-    } catch (e) {
-      console.error('KV getWithMetadata error:', e)
-      return json(429, { success: false, error: '请稍后再试' })
-    }
-  }
-
   const code = generateCode()
-  console.log('Generated code for:', email, code)
 
   try {
     await Promise.all([
@@ -135,7 +123,6 @@ async function handleRequestCode(req: Request, env: Env): Promise<Response> {
       kv.put(`attempts:${email}`, '0', { expirationTtl: CODE_EXPIRE_SEC }),
       kv.put(rateKey, '1', { expirationTtl: RATE_LIMIT_SEC }),
     ])
-    console.log('KV writes done')
   } catch (e) {
     console.error('KV put error:', e)
     return json(500, { success: false, error: '服务暂不可用，请稍后重试' })
@@ -143,7 +130,6 @@ async function handleRequestCode(req: Request, env: Env): Promise<Response> {
 
   try {
     await sendVerificationEmail(email, code, env.RESEND_API_KEY)
-    console.log('Email sent')
   } catch (e) {
     console.error('Resend error:', e)
     return json(500, { success: false, error: '邮件发送失败，请稍后重试' })
@@ -153,27 +139,18 @@ async function handleRequestCode(req: Request, env: Env): Promise<Response> {
 }
 
 async function handleSubscribe(req: Request, env: Env): Promise<Response> {
-  let body: { email?: string; code?: string; turnstileToken?: string }
+  let body: { email?: string; code?: string }
   try {
     body = await req.json()
-  } catch (e) {
-    console.error('JSON parse error:', e)
+  } catch {
     return json(400, { success: false, error: '请求格式错误' })
   }
 
-  const { email, code, turnstileToken } = body
+  // Only accept email + code, no turnstile token needed (already verified at request-code step)
+  const { email, code } = body
 
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return json(400, { success: false, error: '邮箱格式不正确' })
-  }
-
-  if (!turnstileToken) {
-    return json(403, { success: false, error: '人机验证未通过' })
-  }
-
-  const turnstileValid = await verifyTurnstile(turnstileToken, env.TURNSTILE_SECRET_KEY)
-  if (!turnstileValid) {
-    return json(403, { success: false, error: '人机验证失败，请刷新页面重试' })
   }
 
   if (!code || code.length !== 6) {
@@ -187,7 +164,6 @@ async function handleSubscribe(req: Request, env: Env): Promise<Response> {
   let stored: string | null
   try {
     stored = await kv.get(codeKey)
-    console.log('KV get code:', stored)
   } catch (e) {
     console.error('KV read code error:', e)
     return json(500, { success: false, error: '服务暂不可用，请稍后重试' })
@@ -245,7 +221,7 @@ const worker = {
         return json(404, { success: false, error: 'Not found' })
       }
     } catch (e) {
-      console.error('Unhandled worker error:', e)
+      console.error('Worker error:', e)
       return json(500, { success: false, error: '服务器内部错误' })
     }
   }
