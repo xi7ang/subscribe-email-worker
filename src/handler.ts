@@ -197,6 +197,24 @@ async function handleSubscribe(req: Request, env: Env): Promise<Response> {
     await Promise.all([kv.delete(codeKey), kv.delete(attemptsKey)])
   } catch { /* ignore */ }
 
+  // Add to Resend segment
+  try {
+    const { Resend } = await import('resend')
+    const resend = new Resend(env.RESEND_API_KEY)
+    await resend.contacts.create({
+      email: email,
+      segments: [{ id: '0d91d539-9540-4cba-8554-c80cfd443b2e' }],
+      unsubscribed: false,
+    })
+  } catch (e: any) {
+    // Silently ignore duplicate contact (409) — user is already subscribed
+    const msg = e?.message || ''
+    if (!msg.includes('409') && !msg.includes('already exists')) {
+      console.error('Resend contact create error:', e)
+      // Still return success since email was verified
+    }
+  }
+
   return json(200, { success: true, message: '订阅成功！🎉' })
 }
 
