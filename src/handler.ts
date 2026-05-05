@@ -5,9 +5,9 @@ export interface Env {
 }
 
 const RESEND_FROM = 'devmini <noreply@resend.dev>'
-const CODE_EXPIRE_SEC = 300       // 5 min
-const RATE_LIMIT_SEC = 300       // 5 min
-const MAX_VERIFY_ATTEMPTS = 3    // per code
+const CODE_EXPIRE_SEC = 300
+const RATE_LIMIT_SEC = 300
+const MAX_VERIFY_ATTEMPTS = 3
 
 function corsHeaders() {
   return {
@@ -24,7 +24,6 @@ function json(status: number, body: object) {
   })
 }
 
-// ── Turnstile verification ──────────────────────────────────────────────────
 async function verifyTurnstile(token: string, secretKey: string): Promise<boolean> {
   const params = new URLSearchParams({ secret: secretKey, response: token })
   const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
@@ -35,15 +34,13 @@ async function verifyTurnstile(token: string, secretKey: string): Promise<boolea
   return data.success === true
 }
 
-// ── Generate 6-digit code ─────────────────────────────────────────────────────
 function generateCode(): string {
   return Math.floor(100000 + Math.random() * 900000).toString()
 }
 
-// ── Send verification email via Resend ──────────────────────────────────────
-async function sendVerificationEmail(email: string, code: string): Promise<void> {
+async function sendVerificationEmail(email: string, code: string, apiKey: string): Promise<void> {
   const { Resend } = await import('resend')
-  const resend = new Resend(env.RESEND_API_KEY)
+  const resend = new Resend(apiKey)
 
   const html = `<!DOCTYPE html>
 <html>
@@ -75,17 +72,14 @@ async function sendVerificationEmail(email: string, code: string): Promise<void>
   })
 }
 
-// ── GET /request-code ───────────────────────────────────────────────────────
 async function handleRequestCode(req: Request, env: Env): Promise<Response> {
   const body = await req.json() as { email: string; turnstileToken: string }
   const { email, turnstileToken } = body
 
-  // Validate email
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return json(400, { success: false, error: '邮箱格式不正确' })
   }
 
-  // Verify Turnstile
   if (!turnstileToken) {
     return json(403, { success: false, error: '人机验证未通过' })
   }
@@ -97,7 +91,6 @@ async function handleRequestCode(req: Request, env: Env): Promise<Response> {
   const kv = env.SUBSCRIBE_KV
   const rateKey = `rate:${email}`
 
-  // Check rate limit
   const existing = await kv.get(rateKey)
   if (existing) {
     const ttl = await kv.getWithMetadata(rateKey)
@@ -105,18 +98,14 @@ async function handleRequestCode(req: Request, env: Env): Promise<Response> {
     return json(429, { success: false, error: `请 ${left} 秒后再试`, retryAfter: left })
   }
 
-  // Generate & store code
   const code = generateCode()
   const codeKey = `code:${email}`
   await kv.put(codeKey, code, { expirationTtl: CODE_EXPIRE_SEC })
-  // Store verification attempt counter
   await kv.put(`attempts:${email}`, '0', { expirationTtl: CODE_EXPIRE_SEC })
-  // Set rate limit
   await kv.put(rateKey, '1', { expirationTtl: RATE_LIMIT_SEC })
 
-  // Send email
   try {
-    await sendVerificationEmail(email, code)
+    await sendVerificationEmail(email, code, env.RESEND_API_KEY)
   } catch (e) {
     console.error('Resend error:', e)
     return json(500, { success: false, error: '邮件发送失败，请稍后重试' })
@@ -125,17 +114,14 @@ async function handleRequestCode(req: Request, env: Env): Promise<Response> {
   return json(200, { success: true, message: '验证码已发送，请查收邮件' })
 }
 
-// ── POST /subscribe ──────────────────────────────────────────────────────────
 async function handleSubscribe(req: Request, env: Env): Promise<Response> {
   const body = await req.json() as { email: string; code: string; turnstileToken: string }
   const { email, code, turnstileToken } = body
 
-  // Validate email
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return json(400, { success: false, error: '邮箱格式不正确' })
   }
 
-  // Verify Turnstile
   if (!turnstileToken) {
     return json(403, { success: false, error: '人机验证未通过' })
   }
@@ -144,7 +130,6 @@ async function handleSubscribe(req: Request, env: Env): Promise<Response> {
     return json(403, { success: false, error: '人机验证失败，请刷新页面重试' })
   }
 
-  // Validate code
   if (!code || code.length !== 6) {
     return json(400, { success: false, error: '验证码格式错误' })
   }
@@ -159,11 +144,9 @@ async function handleSubscribe(req: Request, env: Env): Promise<Response> {
   }
 
   if (stored !== code) {
-    // Increment attempts
     const attemptsStr = await kv.get(attemptsKey)
     const attempts = parseInt(attemptsStr || '0', 10) + 1
     if (attempts >= MAX_VERIFY_ATTEMPTS) {
-      // Lock out - delete code
       await kv.delete(codeKey)
       await kv.delete(attemptsKey)
       return json(400, { success: false, error: '验证失败次数过多，请重新获取验证码' })
@@ -172,21 +155,16 @@ async function handleSubscribe(req: Request, env: Env): Promise<Response> {
     return json(400, { success: false, error: `验证码错误，剩余 ${MAX_VERIFY_ATTEMPTS - attempts} 次` })
   }
 
-  // Code valid → complete subscription
-  // Here you would call your existing subscription logic (e.g. Resend audience / email list)
-  // For now, just delete code and return success
   await kv.delete(codeKey)
   await kv.delete(attemptsKey)
 
   return json(200, { success: true, message: '订阅成功！🎉' })
 }
 
-// ── Router ──────────────────────────────────────────────────────────────────
 const worker = {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url)
 
-    // CORS preflight
     if (req.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders() })
     }
