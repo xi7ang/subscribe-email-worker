@@ -18,3 +18,7 @@ enabled = true
 head_sampling_rate = 1
 persist = true
 invocation_logs = true
+
+[[routes]]
+pattern = "subscribe-email.devmini.space"
+custom_domain = true
