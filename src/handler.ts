@@ -238,7 +238,7 @@ async function handleSubscribe(req: Request, env: Env): Promise<Response> {
   </div>
 </body></html>`
     await resend.emails.send({
-      from: 'subscribe@devmini.space',
+      from: 'Devmini <noreply@devmini.space>',
       to: email,
       subject: '欢迎来到 devmini 🌟',
       html,
